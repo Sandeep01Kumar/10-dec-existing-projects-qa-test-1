@@ -1,41 +1,36 @@
 /**
- * Robust HTTP Server with Error Handling, Graceful Shutdown,
- * Input Validation, and Resource Cleanup
- *
- * This server implements comprehensive error handling for:
- * - Server-level errors (EADDRINUSE, EACCES)
- * - Client errors (malformed requests)
- * - Process signals (SIGTERM, SIGINT)
- * - Uncaught exceptions and unhandled rejections
- * - Connection tracking and cleanup
- * - Input validation (HTTP methods, URL length)
+ * Robust HTTP Server Implementation
+ * 
+ * A production-ready Node.js HTTP server with comprehensive error handling,
+ * graceful shutdown, input validation, connection tracking, and resource cleanup.
  */
-
 const http = require('http');
 
-// Server configuration
+// Server configuration constants
 const hostname = '127.0.0.1';
 const port = 3000;
 
-// Timeout configuration constants
-const SERVER_TIMEOUT = 30000;        // 30 seconds for request processing
-const KEEP_ALIVE_TIMEOUT = 5000;     // 5 seconds for keep-alive connections
-const HEADERS_TIMEOUT = 60000;       // 60 seconds to receive headers
-const GRACEFUL_SHUTDOWN_TIMEOUT = 10000;  // 10 seconds max for graceful shutdown
-const MAX_URL_LENGTH = 2048;         // Maximum URL length allowed
+// Timeout configuration constants (in milliseconds)
+const SERVER_TIMEOUT = 30000;           // 30 seconds - maximum time for request processing
+const KEEP_ALIVE_TIMEOUT = 5000;        // 5 seconds - time to keep connection alive after response
+const HEADERS_TIMEOUT = 60000;          // 60 seconds - time allowed to receive headers
+const GRACEFUL_SHUTDOWN_TIMEOUT = 10000; // 10 seconds - maximum time to wait for connections to close
+const MAX_URL_LENGTH = 2048;            // Maximum allowed URL length
 
-// Connection tracking for graceful shutdown
-let isShuttingDown = false;
-const activeConnections = new Set();
+// Connection tracking state
+let isShuttingDown = false;             // Flag to indicate server is shutting down
+const activeConnections = new Set();    // Track all active socket connections
 
 /**
- * Validates the incoming HTTP request
- * @param {http.IncomingMessage} req - The incoming request
- * @returns {Object} Validation result with isValid flag and optional error
+ * Validates incoming HTTP requests for method and URL constraints.
+ * 
+ * @param {http.IncomingMessage} req - The incoming HTTP request object
+ * @returns {Object} Validation result with isValid flag and optional error details
  */
 function validateRequest(req) {
+  // List of valid HTTP methods that this server accepts
   const validMethods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
-
+  
   // Validate HTTP method
   if (!validMethods.includes(req.method)) {
     return {
@@ -44,8 +39,8 @@ function validateRequest(req) {
       message: 'Bad Request: Invalid HTTP method'
     };
   }
-
-  // Validate URL length
+  
+  // Validate URL length to prevent buffer overflow and resource exhaustion attacks
   if (req.url && req.url.length > MAX_URL_LENGTH) {
     return {
       isValid: false,
@@ -53,206 +48,262 @@ function validateRequest(req) {
       message: 'URI Too Long'
     };
   }
-
+  
   return { isValid: true };
 }
 
 /**
- * Safely sends an error response
- * @param {http.ServerResponse} res - The response object
- * @param {number} statusCode - HTTP status code
- * @param {string} message - Error message
+ * Safely sends an error response to the client.
+ * Handles cases where headers may have already been sent or connection is closed.
+ * 
+ * @param {http.ServerResponse} res - The HTTP response object
+ * @param {number} statusCode - HTTP status code to send
+ * @param {string} message - Error message to include in response body
  */
 function sendErrorResponse(res, statusCode, message) {
-  // Don't send if headers already sent or response ended
+  // Check if response can still be written
   if (res.headersSent || res.writableEnded) {
     return;
   }
-
+  
   try {
     res.statusCode = statusCode;
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Connection', 'close');
     res.end(message + '\n');
   } catch (err) {
-    // Ignore errors when sending error response
+    // Silently handle any errors during error response
+    // This can happen if the connection was closed unexpectedly
     console.error('Error sending error response:', err.message);
   }
 }
 
-// Create HTTP server with request handler
+/**
+ * Main HTTP request handler with comprehensive error handling.
+ * Processes incoming requests and sends appropriate responses.
+ * 
+ * @param {http.IncomingMessage} req - The incoming HTTP request object
+ * @param {http.ServerResponse} res - The HTTP response object
+ */
 const server = http.createServer((req, res) => {
-  // Reject requests during shutdown
+  // Reject all requests during shutdown with 503 Service Unavailable
   if (isShuttingDown) {
     sendErrorResponse(res, 503, 'Service Unavailable: Server is shutting down');
     return;
   }
-
-  // Validate the request
+  
+  // Validate the incoming request
   const validation = validateRequest(req);
   if (!validation.isValid) {
     sendErrorResponse(res, validation.statusCode, validation.message);
     return;
   }
-
-  // Handle request errors
+  
+  // Handle request-level errors (e.g., client aborts request)
   req.on('error', (err) => {
     console.error('Request error:', err.message);
-    sendErrorResponse(res, 500, 'Internal Server Error');
+    sendErrorResponse(res, 400, 'Bad Request');
   });
-
-  // Handle response errors
+  
+  // Handle response-level errors (e.g., connection issues during response)
   res.on('error', (err) => {
     console.error('Response error:', err.message);
   });
-
-  // Handle client disconnect during request processing
+  
+  // Handle client disconnect before response completes
   req.on('close', () => {
     if (!res.writableEnded) {
-      // Client disconnected before response was sent
-      res.destroy();
+      // Client disconnected before we finished sending the response
+      // This is normal behavior and doesn't require error handling
     }
   });
-
-  // Normal request handling - send Hello, World! response
-  res.statusCode = 200;
-  res.setHeader('Content-Type', 'text/plain');
-  res.end('Hello, World!\n');
+  
+  // Send successful response
+  try {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/plain');
+    res.end('Hello, World!\n');
+  } catch (err) {
+    console.error('Error sending response:', err.message);
+    sendErrorResponse(res, 500, 'Internal Server Error');
+  }
 });
 
-// Configure server timeouts
-server.timeout = SERVER_TIMEOUT;
-server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT;
-server.headersTimeout = HEADERS_TIMEOUT;
+// Configure server timeouts to prevent resource exhaustion
+server.timeout = SERVER_TIMEOUT;                // Time to wait for request to complete
+server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT;   // Time to keep connection alive
+server.headersTimeout = HEADERS_TIMEOUT;        // Time to wait for headers
 
-// Track connections for graceful shutdown
+/**
+ * Connection tracking handler.
+ * Tracks all incoming socket connections for graceful shutdown management.
+ */
 server.on('connection', (socket) => {
+  // Add socket to active connections set
   activeConnections.add(socket);
-
+  
+  // Handle socket errors to prevent crashes
+  socket.on('error', (err) => {
+    console.error('Socket error:', err.message);
+  });
+  
   // Remove socket from tracking when it closes
   socket.on('close', () => {
     activeConnections.delete(socket);
   });
-
-  // Handle socket errors
-  socket.on('error', (err) => {
-    console.error('Socket error:', err.message);
-    activeConnections.delete(socket);
-  });
-
+  
   // Handle socket timeout
   socket.on('timeout', () => {
-    console.log('Socket timeout - destroying connection');
+    console.warn('Socket timeout - destroying connection');
     socket.destroy();
     activeConnections.delete(socket);
   });
 });
 
-// Handle client errors (malformed requests)
+/**
+ * Client error handler.
+ * Handles malformed HTTP requests, invalid headers, and connection issues.
+ */
 server.on('clientError', (err, socket) => {
   console.error('Client error:', err.message);
-
-  if (socket.destroyed) {
-    return;
+  
+  // Check if socket is still writable before sending response
+  if (socket.writable) {
+    // Handle specific error types
+    if (err.code === 'HPE_HEADER_OVERFLOW') {
+      // Request headers too large
+      socket.end('HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nRequest Header Fields Too Large\n');
+    } else if (err.code === 'ECONNRESET' || err.code === 'EPIPE') {
+      // Connection was reset or broken pipe - just destroy the socket
+      socket.destroy();
+    } else {
+      // Generic bad request response
+      socket.end('HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nBad Request\n');
+    }
   }
-
-  let response;
-  if (err.code === 'HPE_HEADER_OVERFLOW') {
-    response = 'HTTP/1.1 431 Request Header Fields Too Large\r\n';
-    response += 'Content-Type: text/plain\r\n';
-    response += 'Connection: close\r\n\r\n';
-    response += 'Request Header Fields Too Large\n';
-  } else if (err.code === 'ECONNRESET' || err.code === 'EPIPE') {
-    // Client disconnected, just close the socket
-    socket.destroy();
-    return;
-  } else {
-    response = 'HTTP/1.1 400 Bad Request\r\n';
-    response += 'Content-Type: text/plain\r\n';
-    response += 'Connection: close\r\n\r\n';
-    response += 'Bad Request\n';
-  }
-
-  socket.end(response);
+  
+  // Ensure socket is removed from tracking
+  activeConnections.delete(socket);
 });
 
-// Handle server-level errors
+/**
+ * Server error handler.
+ * Handles server-level errors like port conflicts and permission issues.
+ */
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Error: Port ${port} is already in use`);
+    console.error('Please stop the other process or use a different port');
     process.exit(1);
   } else if (err.code === 'EACCES') {
     console.error(`Error: Permission denied to bind to port ${port}`);
+    console.error('Try using a port number greater than 1024 or run with elevated privileges');
     process.exit(1);
   } else {
     console.error('Server error:', err.message);
+    // For other errors, attempt graceful shutdown
     gracefulShutdown('serverError');
   }
 });
 
-// Handle server close event
+/**
+ * Server close event handler.
+ * Logs when the server has finished closing.
+ */
 server.on('close', () => {
   console.log('Server closed successfully. All connections handled.');
 });
 
 /**
- * Performs graceful shutdown of the server
- * @param {string} signal - The signal or reason for shutdown
+ * Graceful shutdown function.
+ * Stops accepting new connections and waits for existing connections to close.
+ * Forces shutdown after timeout if connections don't close gracefully.
+ * 
+ * @param {string} signal - The signal or reason that triggered shutdown
  */
 function gracefulShutdown(signal) {
+  // Prevent multiple shutdown attempts
   if (isShuttingDown) {
     console.log('Shutdown already in progress...');
     return;
   }
-
-  console.log(`${signal} received. Starting graceful shutdown...`);
+  
   isShuttingDown = true;
-
-  // Stop accepting new connections
-  server.close((err) => {
-    if (err) {
-      console.error('Error during server close:', err.message);
-      process.exit(1);
-    }
-    process.exit(0);
-  });
-
-  // Close all active connections after a brief delay to allow ongoing responses
-  setTimeout(() => {
-    console.log(`Closing ${activeConnections.size} active connections...`);
-    for (const socket of activeConnections) {
-      socket.destroy();
-    }
-    activeConnections.clear();
-  }, 100);
-
-  // Force shutdown after timeout
-  setTimeout(() => {
-    console.error('Graceful shutdown timeout. Forcing exit...');
+  console.log(`${signal} received. Starting graceful shutdown...`);
+  console.log(`Active connections: ${activeConnections.size}`);
+  
+  // Set a force shutdown timeout
+  const forceShutdownTimeout = setTimeout(() => {
+    console.error('Graceful shutdown timed out. Forcing shutdown...');
+    console.log(`Forcefully closing ${activeConnections.size} remaining connections`);
+    
+    // Forcefully destroy all remaining connections
+    activeConnections.forEach((socket) => {
+      try {
+        socket.destroy();
+      } catch (err) {
+        console.error('Error destroying socket:', err.message);
+      }
+    });
+    
     process.exit(1);
   }, GRACEFUL_SHUTDOWN_TIMEOUT);
+  
+  // Don't let the timeout prevent process from exiting
+  forceShutdownTimeout.unref();
+  
+  // Stop accepting new connections and close the server
+  server.close((err) => {
+    if (err) {
+      console.error('Error closing server:', err.message);
+      clearTimeout(forceShutdownTimeout);
+      process.exit(1);
+    }
+    
+    clearTimeout(forceShutdownTimeout);
+    console.log('Server shutdown complete');
+    process.exit(0);
+  });
+  
+  // Close all active connections gracefully
+  // Set a short timeout on sockets to allow pending requests to complete
+  activeConnections.forEach((socket) => {
+    if (!socket.destroyed) {
+      // Set a shorter timeout to speed up shutdown
+      socket.setTimeout(5000, () => {
+        socket.destroy();
+      });
+    }
+  });
 }
 
-// Handle process signals for graceful shutdown
+// Process signal handlers for graceful shutdown
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Handle uncaught exceptions
+/**
+ * Global uncaught exception handler.
+ * Logs the error and attempts graceful shutdown.
+ * Note: Best practice is to exit after uncaught exception as application state may be corrupted.
+ */
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err.message);
-  console.error(err.stack);
+  console.error('Stack:', err.stack);
   gracefulShutdown('uncaughtException');
 });
 
-// Handle unhandled promise rejections
+/**
+ * Global unhandled promise rejection handler.
+ * Logs the rejection reason for debugging purposes.
+ */
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise);
   console.error('Reason:', reason);
 });
 
-// Start the server
+// Start the server and begin listening for connections
 server.listen(port, hostname, () => {
   console.log(`Server running at http://${hostname}:${port}/`);
-  console.log('Server is ready to handle requests.');
-  console.log('Press Ctrl+C to stop the server.');
+  console.log(`Process ID: ${process.pid}`);
+  console.log('Press Ctrl+C to stop the server');
 });
