@@ -307,3 +307,6 @@ server.listen(port, hostname, () => {
   console.log(`Process ID: ${process.pid}`);
   console.log('Press Ctrl+C to stop the server');
 });
+
+// Log added for PR testing purposes
+console.log('Server module loaded successfully');
