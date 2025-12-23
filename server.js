@@ -110,11 +110,12 @@ const server = http.createServer((req, res) => {
     console.error('Response error:', err.message);
   });
   
-  // Handle client disconnect before response completes
+  // Handle client disconnect - no action needed as server handles this gracefully
+  // The 'close' event fires when the underlying connection was terminated
   req.on('close', () => {
-    if (!res.writableEnded) {
-      // Client disconnected before we finished sending the response
-      // This is normal behavior and doesn't require error handling
+    // Log if response wasn't completed (useful for debugging)
+    if (!res.writableEnded && process.env.DEBUG) {
+      console.log('Client disconnected before response completed');
     }
   });
   
@@ -307,6 +308,3 @@ server.listen(port, hostname, () => {
   console.log(`Process ID: ${process.pid}`);
   console.log('Press Ctrl+C to stop the server');
 });
-
-// Log added for PR testing purposes
-console.log('Server module loaded successfully');
